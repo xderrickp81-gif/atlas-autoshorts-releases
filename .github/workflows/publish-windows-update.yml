@@ -1,0 +1,51 @@
+name: Publish verified Atlas Windows update
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - releases/current.txt
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Windows installer archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d ' \r\n' < releases/current.txt)"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid Atlas version" >&2
+            exit 1
+          fi
+          folder="releases/v${version}"
+          mapfile -t parts < <(find "$folder" -maxdepth 1 -type f -name 'part-*.b64' | sort)
+          if (( ${#parts[@]} < 1 )); then
+            echo "No installer parts for $version" >&2
+            exit 1
+          fi
+          mkdir -p dist
+          cat "${parts[@]}" | base64 --decode > dist/AtlasAutoShorts-Setup.exe
+          expected="$(tr -d ' \r\n' < "$folder/sha256.txt")"
+          echo "$expected  dist/AtlasAutoShorts-Setup.exe" | sha256sum --check --status
+          echo "ATLAS_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Publish release for the built-in updater
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v${ATLAS_VERSION}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release already exists: $tag" >&2
+            exit 1
+          fi
+          gh release create "$tag" dist/AtlasAutoShorts-Setup.exe \
+            --title "Atlas AutoShorts $tag" \
+            --notes "Free local Atlas AutoShorts improvements. Open Atlas and select Check for Updates, then Update Now. Videos remain on your computer." \
+            --latest
